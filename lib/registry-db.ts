@@ -1,0 +1,132 @@
+import pool from '@/lib/db';
+import { normalizeUiType, type UiType } from '@/lib/ui-type';
+
+export type RegistryRow = {
+    factory_serial: string;
+    plug_id: string;
+    login_password: string;
+    registered: 'Yes' | 'No';
+};
+
+const DEFAULT_LOGIN_PASSWORD = '123456';
+
+export async function getRegistryByFactorySerial(
+    factorySerial: string
+): Promise<RegistryRow | null> {
+    if (!pool) return null;
+
+    const [rows]: any = await pool.execute(
+        'SELECT factory_serial, plug_id, login_password, registered FROM plug_registry WHERE factory_serial = ?',
+        [factorySerial]
+    );
+
+    if (!rows.length) return null;
+
+    const registered = rows[0].registered === 'Yes' ? 'Yes' : 'No';
+
+    return {
+        factory_serial: rows[0].factory_serial,
+        plug_id: rows[0].plug_id,
+        login_password: rows[0].login_password || DEFAULT_LOGIN_PASSWORD,
+        registered,
+    };
+}
+
+export async function getLoginPasswordByPlugId(plugId: string): Promise<string | null> {
+    if (!pool) return null;
+
+    const [rows]: any = await pool.execute(
+        'SELECT login_password FROM plug_registry WHERE LOWER(plug_id) = LOWER(?)',
+        [plugId.trim()]
+    );
+
+    if (!rows.length) return null;
+    return rows[0].login_password || DEFAULT_LOGIN_PASSWORD;
+}
+
+/**
+ * 依 plugId 查詢 UI 類型（A＝含點動，B＝無點動，C＝定時）。
+ * 查無資料或無 DB 連線時預設 A，維持舊設備相容。
+ */
+export async function getUiTypeByPlugId(plugId: string): Promise<UiType> {
+    if (!pool) return 'A';
+
+    const [rows]: any = await pool.execute(
+        'SELECT ui_type FROM plug_registry WHERE LOWER(plug_id) = LOWER(?)',
+        [plugId.trim()]
+    );
+
+    if (!rows.length) return 'A';
+    return normalizeUiType(rows[0].ui_type);
+}
+
+export async function updateLoginPasswordByFactorySerial(
+    factorySerial: string,
+    loginPassword: string
+): Promise<boolean> {
+    if (!pool) return false;
+
+    const [result]: any = await pool.execute(
+        'UPDATE plug_registry SET login_password = ?, updated_at = CURRENT_TIMESTAMP WHERE factory_serial = ?',
+        [loginPassword, factorySerial]
+    );
+
+    return result.affectedRows > 0;
+}
+
+/**
+ * ESP32 成功寫入 PlugID 至 NVS 後（原子 claim）：
+ * - 僅 registered = No 時設為 Yes
+ * - created_at 僅在尚未紀錄時寫入（保留首次配號時間）
+ */
+export async function markPlugIdAssignedByFactorySerial(
+    factorySerial: string
+): Promise<boolean> {
+    if (!pool) return false;
+
+    const [result]: any = await pool.execute(
+        `UPDATE plug_registry
+         SET registered = 'Yes',
+             created_at = COALESCE(created_at, CURRENT_TIMESTAMP)
+         WHERE factory_serial = ? AND registered = 'No'`,
+        [factorySerial]
+    );
+
+    return result.affectedRows > 0;
+}
+
+/**
+ * ESP32 原廠重置：釋放出廠編號，允許同一設備日後重新配號
+ */
+export async function releasePlugByFactorySerial(
+    factorySerial: string
+): Promise<boolean> {
+    if (!pool) return false;
+
+    const [result]: any = await pool.execute(
+        `UPDATE plug_registry SET registered = 'No' WHERE factory_serial = ?`,
+        [factorySerial]
+    );
+
+    return result.affectedRows > 0;
+}
+
+export async function updateLoginPasswordByPlugId(
+    plugId: string,
+    loginPassword: string
+): Promise<'updated' | 'no_database' | 'not_found'> {
+    if (!pool) return 'no_database';
+
+    const normalizedPlugId = plugId.trim();
+
+    const [result]: any = await pool.execute(
+        'UPDATE plug_registry SET login_password = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(plug_id) = LOWER(?)',
+        [loginPassword, normalizedPlugId]
+    );
+
+    if (result.affectedRows > 0) {
+        return 'updated';
+    }
+
+    return 'not_found';
+}

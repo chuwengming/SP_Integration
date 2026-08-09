@@ -1,0 +1,19 @@
+{
+    "mqtt": {
+        "broker": "w1a7a47a.ala.asia-southeast1.emqxsl.com",
+        "port": "8883",
+        "clientId": "user112233",
+        "username": "moonstar",
+        "password": "moonstar9926ej@Hs"
+    },
+    "plugName": "SmartPlug",
+    "relayNames": {
+        "relay1": "Relay 1",
+        "relay2": "Relay 2",
+        "relay3": "Relay 3",
+        "relay4": "Relay 4",
+        "relay5": "Relay 5",
+        "relay6": "Relay 6"
+    },
+    "plugId": "sp654321"
+}
