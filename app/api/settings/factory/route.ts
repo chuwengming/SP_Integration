@@ -96,12 +96,13 @@ export async function POST(request: NextRequest) {
         // 7. 獲取 Plug ID
         console.log(`📤 準備發送 MQTT 廣播: PlugID=${plugId}, ClientID=${clientId}`);
 
+        // 插座名稱以 ESP32 NVS 為權威：送到設備指令主題，由 ESP32 儲存後廣播給所有 Client
         const plugName = factorySettings.plugName || 'SmartPlug';
-        const plugNameTopic = `smartplug/${plugId}/plugName`;
+        const plugNameTopic = MqttTopics.plugNameTopic(plugId, clientId);
         const plugNamePayload = JSON.stringify({ plugName });
 
         mqttClient.publish(plugNameTopic, plugNamePayload, { qos: 1 });
-        console.log(`📤 已發送設備名稱廣播: ${plugNameTopic} -> ${plugNamePayload}`);
+        console.log(`📤 已送出設備名稱至 ESP32: ${plugNameTopic} -> ${plugNamePayload}`);
 
         // 9. 發送繼電器名稱廣播 (Relay 1 ~ Relay 6)
         const relayNames = factorySettings.relayNames || {

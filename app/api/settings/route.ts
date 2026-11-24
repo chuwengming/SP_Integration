@@ -51,17 +51,17 @@ export async function POST(request: NextRequest) {
         const publicPath = path.join(process.cwd(), 'public', 'data', 'setting.json');
         await fs.writeFile(publicPath, JSON.stringify(body, null, 4), 'utf-8');
 
-        // 如果插座名稱有變化，透過 MQTT 廣播給所有 Client 端
+        // 插座名稱以 ESP32 NVS 為權威：送到設備指令主題，由 ESP32 儲存後廣播 smartplug/{plugId}/plugName 給所有 Client
         if (oldPlugName !== newPlugName && newPlugName.trim() !== '') {
-            const topic = MqttTopics.plugName(plugId);
+            const topic = MqttTopics.plugNameTopic(plugId, body.mqtt.clientId);
             const payload = JSON.stringify({ plugName: newPlugName });
 
-            const broadcastSuccess = publishMqtt(topic, payload, { qos: 1 }, body.mqtt.clientId);
+            const sent = publishMqtt(topic, payload, { qos: 1 }, body.mqtt.clientId);
 
-            if (broadcastSuccess) {
-                console.log(`📤 已透過 MQTT 廣播插座名稱更新: ${newPlugName} (PlugID: ${plugId})`);
+            if (sent) {
+                console.log(`📤 已送出插座名稱至 ESP32: ${newPlugName} (PlugID: ${plugId})`);
             } else {
-                console.warn(`⚠️  MQTT 廣播插座名稱失敗，可能 MQTT 未連線`);
+                console.warn(`⚠️  插座名稱未送達 ESP32，可能 MQTT 未連線`);
             }
         }
 
