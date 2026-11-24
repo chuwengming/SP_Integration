@@ -2,7 +2,7 @@
     "mqtt": {
         "broker": "w1a7a47a.ala.asia-southeast1.emqxsl.com",
         "port": "8883",
-        "clientId": "user112233",
+        "clientId": "user123456",
         "username": "moonstar",
         "password": "moonstar9926ej@Hs"
     },
@@ -15,5 +15,5 @@
         "relay5": "Relay 5",
         "relay6": "Relay 6"
     },
-    "plugId": "sp654321"
+    "plugId": "sp60a3c9"
 }

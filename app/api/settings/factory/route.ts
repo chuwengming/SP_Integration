@@ -87,6 +87,7 @@ export async function POST(request: NextRequest) {
             console.warn('⚠️ MQTT 未連線，無法發送廣播訊息');
             return NextResponse.json({
                 success: true,
+                deviceSynced: false,
                 message: '設備設定已重置，但 MQTT 未連線，無法同步至設備',
                 settings: mergedSettings
             });
@@ -139,7 +140,13 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        // 10. 安全機制：將所有繼電器全數關閉
+        // 10. 先清除所有定時，再關閉繼電器：避免定時在兩個指令之間重新開啟繼電器
+        const clearTimersTopic = MqttTopics.request(plugId, clientId);
+        const clearTimersPayload = JSON.stringify({ type: 'clearAllTimers' });
+        mqttClient.publish(clearTimersTopic, clearTimersPayload, { qos: 1 });
+        console.log(`⏰ 已透過 MQTT 通知 ESP32 清除所有定時設定`);
+
+        // 11. 安全機制：將所有繼電器全數關閉
         console.log('🔌 正在執行安全重置：關閉所有繼電器...');
         for (let i = 0; i < 6; i++) {
             const controlTopic = `smartplug/${plugId}/${clientId}/control`;
@@ -151,7 +158,7 @@ export async function POST(request: NextRequest) {
             console.log(`✅ 已發送繼電器 ${i} 關閉指令: ${controlTopic}`);
         }
 
-        // 11. 透過 MQTT 通知 ESP32 同步 NVS 登入密碼為預設值
+        // 12. 透過 MQTT 通知 ESP32 同步 NVS 登入密碼為預設值
         const passwordResetTopic = MqttTopics.request(plugId, clientId);
         const passwordResetPayload = JSON.stringify({
             type: 'setLoginPassword',
@@ -160,15 +167,11 @@ export async function POST(request: NextRequest) {
         mqttClient.publish(passwordResetTopic, passwordResetPayload, { qos: 1 });
         console.log(`🔑 已透過 MQTT 通知 ESP32 重設 NVS 登入密碼為預設值`);
 
-        const clearTimersTopic = MqttTopics.request(plugId, clientId);
-        const clearTimersPayload = JSON.stringify({ type: 'clearAllTimers' });
-        mqttClient.publish(clearTimersTopic, clearTimersPayload, { qos: 1 });
-        console.log(`⏰ 已透過 MQTT 通知 ESP32 清除所有定時設定`);
-
         console.log('✅ 所有廣播與關閉指令已發送完成');
 
         return NextResponse.json({
             success: true,
+            deviceSynced: true,
             message: '設備設定已成功重置並同步至設備',
             settings: mergedSettings,
             broadcast: {

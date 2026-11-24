@@ -32,19 +32,24 @@ export function defaultRelaySlots(): RelayTimerSlot[] {
     return Array.from({ length: SLOTS_PER_RELAY }, (_, i) => emptySlot(i));
 }
 
-/** 將 HH:mm:ss 轉為分鐘（0–1439） */
+/** 將 HH:mm:ss 轉為當日秒數（0–86399）；同分不同秒必須可區分 */
+export function timeToSeconds(t: string): number {
+    const [h, m, s] = t.split(':').map(Number);
+    return (h || 0) * 3600 + (m || 0) * 60 + (s || 0);
+}
+
+/** @deprecated 請用 timeToSeconds；保留給舊呼叫端 */
 export function timeToMinutes(t: string): number {
-    const [h, m] = t.split(':').map(Number);
-    return (h || 0) * 60 + (m || 0);
+    return Math.floor(timeToSeconds(t) / 60);
 }
 
-/** 區間是否跨日 */
+/** 區間是否跨日（結束秒數嚴格小於開始；相等＝零長度，不算跨日） */
 export function isCrossMidnight(start: string, end: string): boolean {
-    return timeToMinutes(end) <= timeToMinutes(start);
+    return timeToSeconds(end) < timeToSeconds(start);
 }
 
-/** 兩區間在分鐘軸上是否重疊（支援跨日） */
-function intervalsOverlapMinutes(
+/** 兩區間在秒軸上是否重疊（支援跨日；零長度不重疊） */
+function intervalsOverlapSeconds(
     aStart: number,
     aEnd: number,
     bStart: number,
@@ -52,7 +57,8 @@ function intervalsOverlapMinutes(
 ): boolean {
     const expand = (s: number, e: number): [number, number][] => {
         if (e > s) return [[s, e]];
-        return [[s, 1440], [0, e]];
+        if (e === s) return [];
+        return [[s, 86400], [0, e]];
     };
     const aParts = expand(aStart, aEnd);
     const bParts = expand(bStart, bEnd);
@@ -79,11 +85,11 @@ export function slotsShareEffectiveDate(a: RelayTimerSlot, b: RelayTimerSlot): b
 
 export function slotsTimeOverlap(a: RelayTimerSlot, b: RelayTimerSlot): boolean {
     if (!a.enabled || !b.enabled) return false;
-    return intervalsOverlapMinutes(
-        timeToMinutes(a.start),
-        timeToMinutes(a.end),
-        timeToMinutes(b.start),
-        timeToMinutes(b.end)
+    return intervalsOverlapSeconds(
+        timeToSeconds(a.start),
+        timeToSeconds(a.end),
+        timeToSeconds(b.start),
+        timeToSeconds(b.end)
     );
 }
 
@@ -115,8 +121,14 @@ export function formatDateDescription(slot: RelayTimerSlot): string {
 }
 
 export function formatTimeRange(slot: RelayTimerSlot): string {
-    const trim = (t: string) => t.slice(0, 5);
-    return `${trim(slot.start)} → ${trim(slot.end)}`;
+    const norm = (t: string) => {
+        const parts = (t || '00:00:00').split(':');
+        const h = (parts[0] || '00').padStart(2, '0');
+        const m = (parts[1] || '00').padStart(2, '0');
+        const s = (parts[2] || '00').padStart(2, '0');
+        return `${h}:${m}:${s}`;
+    };
+    return `${norm(slot.start)} → ${norm(slot.end)}`;
 }
 
 /** JS Date → 週期日 1=週一 … 7=週日 */

@@ -1,3 +1,6 @@
+// Railway/Node 未明定 TZ 時，與 ESP32 Timer 的 Asia/Taipei 時間語意對齊。
+if (!process.env.TZ) process.env.TZ = 'Asia/Taipei';
+
 const { createServer } = require('http');
 const { parse } = require('url');
 const next = require('next');
@@ -55,7 +58,8 @@ const plugReconnectTimers = new Map(); // plugId -> timeout handle
 function getOrCreatePlugState(plugId) {
     if (!plugStates.has(plugId)) {
         plugStates.set(plugId, {
-            relays: new Map()
+            relays: new Map(),
+            timerFlags: null
         });
     }
     return plugStates.get(plugId);
@@ -273,6 +277,7 @@ const onGlobalMessage = (topic, message, sourceClientId) => {
         // 6. Timer Logo 旗標 (smartplug/{plugId}/timerFlags)
         else if (parts.length === 3 && parts[2] === 'timerFlags') {
             const data = JSON.parse(msgStr);
+            getOrCreatePlugState(plugId).timerFlags = data.flags || [];
             wsMsg = {
                 type: 'timer_flags_updated',
                 flags: data.flags || []
@@ -451,6 +456,7 @@ const onMqttMessage = (topic, message) => {
             };
         }
         else if (category === 'timerFlags') {
+            getOrCreatePlugState(plugId).timerFlags = payload.flags || [];
             frontendData = {
                 type: 'timer_flags_updated',
                 flags: payload.flags || []
@@ -557,6 +563,9 @@ function handleWsMessage(message, ws, clientId, plugId) {
                 const legacyReqTopic = `smartplug/${plugId}/${clientId}/request`;
                 mqttClient.publish(legacyReqTopic, JSON.stringify({ type: "getPlugName" }));
                 mqttClient.publish(legacyReqTopic, JSON.stringify({ type: "getVoltage" }));
+                // 頁面重整／WS 重連不會重新 announce；主動向 ESP32 取回實際繼電器與定時旗標（一般版忽略 getTimerFlags）
+                mqttClient.publish(legacyReqTopic, JSON.stringify({ type: "getRelayStatus" }));
+                mqttClient.publish(legacyReqTopic, JSON.stringify({ type: "getTimerFlags" }));
                 break;
 
             case 'timer_set_relay': {
@@ -768,6 +777,12 @@ app.prepare().then(async () => {
                         name: val.name
                     }));
                 });
+                if (Array.isArray(state.timerFlags)) {
+                    ws.send(JSON.stringify({
+                        type: 'timer_flags_updated',
+                        flags: state.timerFlags
+                    }));
+                }
             }
 
             // 如果是該 Plug 的首位關注者，或者為了保險起見，主動請求一次狀態

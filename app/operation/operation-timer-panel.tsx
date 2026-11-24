@@ -196,6 +196,16 @@ export default function OperationTimerPanel() {
 
   const pendingTimerRelayRef = useRef<number | null>(null);
 
+  const lastSavedTimerRelayRef = useRef<number | null>(null);
+
+  const timerModalRelayRef = useRef<number | null>(null);
+
+  useEffect(() => {
+
+    timerModalRelayRef.current = timerModalRelay;
+
+  }, [timerModalRelay]);
+
 
 
   const fetchDeviceNameFromMqtt = async () => {
@@ -318,6 +328,16 @@ export default function OperationTimerPanel() {
 
 
 
+  const refetchTimerState = useCallback((relayId: number) => {
+
+    sendCommand('timer_get_relay', { relay_id: relayId });
+
+    sendCommand('get_sensors');
+
+  }, [sendCommand]);
+
+
+
   const handleMessage = useCallback((data: Record<string, unknown>) => {
 
     switch (data.type) {
@@ -420,7 +440,7 @@ export default function OperationTimerPanel() {
 
         break;
 
-      case 'timer_conflict':
+      case 'timer_conflict': {
 
         pendingTimerRelayRef.current = null;
 
@@ -428,13 +448,22 @@ export default function OperationTimerPanel() {
 
         setTimeout(() => setSaveError(''), 5000);
 
+        // 樂觀更新已被設備拒絕：向設備取回實際槽位與旗標
+        const rid = Number(data.relay_id);
+
+        if (rid >= 0 && rid < RELAY_COUNT) refetchTimerState(rid);
+
         break;
+
+      }
 
       case 'timer_no_time':
 
         pendingTimerRelayRef.current = null;
 
         alert('設備因故無法設定 Timer，請檢查設備端網路');
+
+        if (lastSavedTimerRelayRef.current !== null) refetchTimerState(lastSavedTimerRelayRef.current);
 
         break;
 
@@ -454,11 +483,14 @@ export default function OperationTimerPanel() {
 
         setDeviceStatus('online');
 
+        // 設備重啟／重連後，開啟中的定時視窗需以設備 NVS 為準重新載入
+        if (timerModalRelayRef.current !== null) refetchTimerState(timerModalRelayRef.current);
+
         break;
 
     }
 
-  }, []);
+  }, [refetchTimerState]);
 
 
 
@@ -598,6 +630,8 @@ export default function OperationTimerPanel() {
 
   const saveRelayTimers = (relayId: number, slots: RelayTimerSlot[]) => {
 
+    lastSavedTimerRelayRef.current = relayId;
+
     setTimerByRelay((prev) => ({ ...prev, [relayId]: slots }));
 
     const hasEnabled = slots.some((s) => s.enabled);
@@ -657,6 +691,15 @@ export default function OperationTimerPanel() {
       });
 
       const result = await response.json();
+
+      if (response.ok && result.success && result.deviceSynced === false) {
+
+        // 設備未收到重置指令：畫面不可假裝已清除，繼電器與定時以設備實際狀態為準
+        alert('MQTT 未連線，重置指令未送達設備；繼電器與定時設定未變更，請確認連線後再試。');
+
+        return;
+
+      }
 
       if (response.ok && result.success) {
 

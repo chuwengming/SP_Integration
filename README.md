@@ -67,87 +67,42 @@ smartplug/
 
 ## 📡 MQTT 主題設計
 
-### 訂閱主題（接收）
-| 主題 | 說明 | 訊息格式 |
-|------|------|---------|
-| `smartplug/temperature` | 溫度數據 | `{"temperature": 25.5}` |
-| `smartplug/relay/state` | 繼電器狀態 | `{"id": 0, "state": true}` |
-| `smartplug/relay/name` | 繼電器名稱 | `{"id": 0, "name": "客廳燈"}` |
-| `smartplug/sensor/data` | 完整感測器數據 | 見下方範例 |
+所有主題都必須包含 PlugID；Client 專屬命令另包含 ClientID。
 
-### 發布主題（發送）
-| 主題 | 說明 | 訊息格式 |
-|------|------|---------|
-| `smartplug/relay/control` | 控制繼電器 | `{"id": 0, "state": true}` |
-| `smartplug/relay/name` | 更新名稱 | `{"id": 0, "name": "新名稱"}` |
-| `smartplug/sensor/data` | 請求數據 | `{"action": "request"}` |
+### 設備公播／狀態主題
+| 主題 | 說明 |
+|------|------|
+| `smartplug/{plugId}/announce` | Client 宣告 |
+| `smartplug/{plugId}/temperature` | 溫度 |
+| `smartplug/{plugId}/voltage` | 電壓 |
+| `smartplug/{plugId}/plugName` | 插座名稱 |
+| `smartplug/{plugId}/relay/state` | 繼電器狀態 |
+| `smartplug/{plugId}/relay/name` | 繼電器名稱 |
+| `smartplug/{plugId}/live` | 設備存活狀態 |
 
-## 🔧 ESP32 MCU 端 MQTT 實作
+### Client 專屬命令主題
+| 主題 | 說明 |
+|------|------|
+| `smartplug/{plugId}/{clientId}/announce` | announce 回應 |
+| `smartplug/{plugId}/{clientId}/control` | 繼電器控制 |
+| `smartplug/{plugId}/{clientId}/name` | 繼電器名稱更新 |
+| `smartplug/{plugId}/{clientId}/plugName` | 插座名稱更新 |
+| `smartplug/{plugId}/{clientId}/request` | 狀態請求 |
+| `smartplug/{plugId}/{clientId}/offline` | Client 離線通知 |
 
-### 必須實作的功能
+### Timer 專屬主題
+| 主題 | 說明 |
+|------|------|
+| `smartplug/{plugId}/deviceTime` | 設備時間 |
+| `smartplug/{plugId}/{clientId}/timer` | 定時讀寫命令 |
+| `smartplug/{plugId}/{clientId}/timer/response` | 定時命令回應 |
+| `smartplug/{plugId}/timer` | 定時設定公播 |
+| `smartplug/{plugId}/timerFlags` | 各 Relay 定時旗標 |
+| `smartplug/{plugId}/timer/conflict` | 定時衝突 |
+| `smartplug/{plugId}/syncReady` | Timer 啟動同步完成 |
 
-1. **溫度發布（每 2 秒）**
-```cpp
-// 定時發布溫度
-void publishTemperature() {
-  float temp = readTemperature();
-  String payload = "{\"temperature\":" + String(temp, 1) + "}";
-  mqttClient.publish("smartplug/plugID/temperature", payload.c_str());
-}
-```
-
-2. **訂閱繼電器控制**
-```cpp
-void handleRelayControl(String payload) {
-  JsonDocument doc;
-  deserializeJson(doc, payload);
-  int id = doc["id"];
-  bool state = doc["state"];
-  
-  // 控制繼電器
-  digitalWrite(relayPins[id], state ? HIGH : LOW);
-  
-  // 回報狀態
-  String response = "{\"id\":" + String(id) + ",\"state\":" + String(state ? "true" : "false") + "}";
-  mqttClient.publish("smartplug/plugID/relay/state", response.c_str());
-}
-```
-
-3. **處理名稱更新**
-```cpp
-void handleRelayName(String payload) {
-  JsonDocument doc;
-  deserializeJson(doc, payload);
-  int id = doc["id"];
-  String name = doc["name"];
-  
-  // 儲存名稱到 EEPROM/Preferences
-  saveRelayName(id, name);
-  
-  // 確認更新
-  mqttClient.publish("smartplug/plugID/relay/name", payload.c_str());
-}
-```
-
-4. **回應數據請求**
-```cpp
-void publishSensorData() {
-  JsonDocument doc;
-  doc["temperature"] = readTemperature();
-  
-  JsonArray relays = doc.createNestedArray("relays");
-  for (int i = 0; i < 6; i++) {
-    JsonObject relay = relays.createNestedObject();
-    relay["id"] = i;
-    relay["name"] = relayNames[i];
-    relay["state"] = digitalRead(relayPins[i]) == HIGH;
-  }
-  
-  String output;
-  serializeJson(doc, output);
-  mqttClient.publish("smartplug/plugID/sensor/data", output.c_str());
-}
-```
+程式碼權威來源為 `lib/mqtt.ts`、`server.js` 及兩份韌體的
+`include/mqtt_manager.h`；修改主題時必須同步三端。
 
 ## 🎨 響應式設計
 
@@ -189,12 +144,12 @@ ws.send(JSON.stringify({ command: 'get_sensors' }));
 使用 MQTTX 或其他 MQTT 客戶端：
 
 1. 連接到相同的 MQTT Broker
-2. 訂閱 `smartplug/relay/control`
-3. 發布到 `smartplug/temperature`：
+2. 訂閱 `smartplug/{plugId}/#`
+3. 發布到 `smartplug/{plugId}/temperature`：
    ```json
    {"temperature": 26.8}
    ```
-4. 發布到 `smartplug/relay/state`：
+4. 發布到 `smartplug/{plugId}/relay/state`：
    ```json
    {"id": 0, "state": true}
    ```

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   type RelayTimerSlot,
   type WeekdayNum,
@@ -25,6 +25,23 @@ interface TimerSettingsModalProps {
   deviceTime?: string;
   onClose: () => void;
   onSaveRelay: (slots: RelayTimerSlot[]) => void;
+}
+
+/** 只比對會影響排程的欄位（停用槽內容、未使用的日期欄位不計），避免自己儲存後的設備回送被誤判為他人更新 */
+function slotsSignature(slots: RelayTimerSlot[]): string {
+  return JSON.stringify(
+    slots.map((s) =>
+      s.enabled
+        ? [
+            1,
+            s.start,
+            s.end,
+            s.dateMode,
+            s.dateMode === 'weekly' ? [...s.weekdays].sort((a, b) => a - b) : s.specificDate,
+          ]
+        : [0]
+    )
+  );
 }
 
 function padTime(h: number, m: number, s: number): string {
@@ -95,6 +112,20 @@ export default function TimerSettingsModal({
   const [editingSlot, setEditingSlot] = useState<number | null>(null);
   const [draft, setDraft] = useState<RelayTimerSlot>(() => emptySlot(0));
   const [error, setError] = useState('');
+  const [remoteNotice, setRemoteNotice] = useState('');
+  const editingIsNewRef = useRef(false);
+  const localSlotsRef = useRef(localSlots);
+  localSlotsRef.current = localSlots;
+
+  // 其他使用者／設備（一次性到期、重置）更新此路定時：以設備權威槽位取代本地清單；編輯中的草稿保留
+  useEffect(() => {
+    const incoming = slots.map((s) => ({ ...s, weekdays: [...s.weekdays] }));
+    if (slotsSignature(incoming) === slotsSignature(localSlotsRef.current)) return;
+    setLocalSlots(incoming);
+    setRemoteNotice('此繼電器的定時設定已由其他操作端或設備更新，清單已同步');
+    const t = setTimeout(() => setRemoteNotice(''), 5000);
+    return () => clearTimeout(t);
+  }, [slots]);
 
   const activeEntries = useMemo(
     () => localSlots.filter((s) => s.enabled),
@@ -106,6 +137,7 @@ export default function TimerSettingsModal({
     const slotIdx = free >= 0 ? free : 0;
     setDraft({ ...emptySlot(slotIdx), enabled: true });
     setEditingSlot(slotIdx);
+    editingIsNewRef.current = true;
     setError('');
     setStep('time');
   };
@@ -114,6 +146,7 @@ export default function TimerSettingsModal({
     const src = localSlots[slotIdx];
     setDraft({ ...src, weekdays: [...src.weekdays] });
     setEditingSlot(slotIdx);
+    editingIsNewRef.current = false;
     setError('');
     setStep('time');
   };
@@ -142,9 +175,27 @@ export default function TimerSettingsModal({
     if (editingSlot === null) return;
     setError('');
 
+    // 新增期間若該槽已被其他操作端佔用，改用其他空槽，避免覆蓋他人設定
+    let targetSlot = editingSlot;
+    if (editingIsNewRef.current && localSlots[targetSlot]?.enabled) {
+      const free = localSlots.findIndex((s) => !s.enabled);
+      if (free < 0) {
+        setError('定時槽已滿（其他操作端剛新增設定），無法再新增');
+        return;
+      }
+      targetSlot = free;
+    }
+
+    // date input 用 specificDate || todayIsoDate() 顯示，未觸發 onChange 時 state 仍可能是 ''
+    const resolvedSpecific =
+      draft.dateMode === 'specific'
+        ? draft.specificDate || todayIsoDate()
+        : draft.specificDate;
+
     const candidate: RelayTimerSlot = {
       ...draft,
-      slot: editingSlot,
+      specificDate: resolvedSpecific,
+      slot: targetSlot,
       enabled: true,
     };
 
@@ -157,14 +208,14 @@ export default function TimerSettingsModal({
       return;
     }
 
-    const conflict = findOverlapConflict(localSlots, candidate, editingSlot);
+    const conflict = findOverlapConflict(localSlots, candidate, targetSlot);
     if (conflict) {
       setError(`與第 ${conflict.slot + 1} 筆設定時間重疊，無法儲存`);
       return;
     }
 
     const next = [...localSlots];
-    next[editingSlot] = candidate;
+    next[targetSlot] = candidate;
     setLocalSlots(next);
     onSaveRelay(next);
     setStep('list');
@@ -293,9 +344,13 @@ export default function TimerSettingsModal({
                                   ? 'text-emerald-400 hover:bg-emerald-500/10'
                                   : 'text-red-400 hover:bg-red-500/10'
                               }`}
-                              title={slot.enabled ? '啟用中' : '已停用'}
+                              title={
+                                slot.enabled
+                                  ? '此筆定時已啟用（到點才會開關繼電器，非表示正在執行）'
+                                  : '此筆定時已停用（不會觸發）'
+                              }
                             >
-                              {slot.enabled ? 'ON' : 'OFF'}
+                              {slot.enabled ? '啟用' : '停用'}
                             </button>
                             <button
                               type="button"
@@ -348,7 +403,17 @@ export default function TimerSettingsModal({
                   <button
                     key={mode}
                     type="button"
-                    onClick={() => setDraft((p) => ({ ...p, dateMode: mode }))}
+                    onClick={() =>
+                      setDraft((p) => ({
+                        ...p,
+                        dateMode: mode,
+                        // 切到指定日時，若尚未選過日期，寫入畫面上預設的「今天」
+                        specificDate:
+                          mode === 'specific' && !p.specificDate
+                            ? todayIsoDate()
+                            : p.specificDate,
+                      }))
+                    }
                     className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition-all ${
                       draft.dateMode === mode
                         ? 'bg-indigo-500 text-white shadow-md'
@@ -406,6 +471,11 @@ export default function TimerSettingsModal({
           {error && (
             <p className="mt-4 text-center text-sm text-red-300 bg-red-500/15 rounded-lg py-2 px-3 border border-red-500/20">
               {error}
+            </p>
+          )}
+          {remoteNotice && (
+            <p className="mt-4 text-center text-sm text-amber-200 bg-amber-500/15 rounded-lg py-2 px-3 border border-amber-500/20">
+              {remoteNotice}
             </p>
           )}
         </div>
