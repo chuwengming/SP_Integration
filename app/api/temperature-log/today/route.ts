@@ -1,16 +1,26 @@
-import { NextResponse } from 'next/server';
-import { getTodayTemperatureRecords } from '@/lib/temperature-logger';
+import { NextRequest, NextResponse } from 'next/server';
+import { getTodayTemperatureRecords, isValidPlugId } from '@/lib/temperature-logger';
 import { getCurrentFormattedTime } from '@/lib/ntp-client';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    console.log('📊 請求今日溫度記錄');
+    const plugId = new URL(request.url).searchParams.get('plugId');
+    if (!isValidPlugId(plugId)) {
+      return NextResponse.json({
+        success: false,
+        records: [],
+        error: '缺少或無效的 PlugID',
+        message: '請重新登入後再查詢溫度記錄'
+      }, { status: 400 });
+    }
+
+    console.log(`📊 請求今日溫度記錄 (Plug: ${plugId})`);
     
     // 獲取當前時間
     const currentTime = await getCurrentFormattedTime();
     
     // 獲取今日的溫度記錄
-    const records = await getTodayTemperatureRecords();
+    const records = await getTodayTemperatureRecords(plugId);
     
     // 格式化記錄數據
     const formattedRecords = records.map(record => {

@@ -61,6 +61,12 @@ interface LoggerStatusResponse {
   lastMqttTemperatureAtFormatted: string | null;
 }
 
+/** 溫度記錄依設備分開：所有查詢都必須帶目前登入的 PlugID */
+function plugQuery(): string {
+  const plugId = typeof window !== 'undefined' ? sessionStorage.getItem('plugId') || '' : '';
+  return `plugId=${encodeURIComponent(plugId)}`;
+}
+
 export default function TemperatureRecordPanel() {
   // 狀態管理
   const [selectedFile, setSelectedFile] = useState<string>('');
@@ -79,7 +85,7 @@ export default function TemperatureRecordPanel() {
   const loadLoggerStatus = async () => {
     setIsLoadingStatus(true);
     try {
-      const response = await fetch('/api/temperature-log/status');
+      const response = await fetch(`/api/temperature-log/status?${plugQuery()}`);
       const data: LoggerStatusResponse = await response.json();
       if (data.success) {
         setLoggerStatus(data);
@@ -106,7 +112,7 @@ export default function TemperatureRecordPanel() {
     setError('');
     
     try {
-      const response = await fetch('/api/temperature-log/list');
+      const response = await fetch(`/api/temperature-log/list?${plugQuery()}`);
       const data: FileListResponse = await response.json();
       
       if (data.success) {
@@ -132,7 +138,7 @@ export default function TemperatureRecordPanel() {
     setSuccessMessage('');
     
     try {
-      const response = await fetch('/api/temperature-log/today');
+      const response = await fetch(`/api/temperature-log/today?${plugQuery()}`);
       const data: TodayRecordsResponse = await response.json();
       
       if (data.success) {
@@ -164,7 +170,7 @@ export default function TemperatureRecordPanel() {
     
     try {
       // 創建下載連結
-      const downloadUrl = `/api/temperature-log/download?file=${encodeURIComponent(selectedFile)}`;
+      const downloadUrl = `/api/temperature-log/download?${plugQuery()}&file=${encodeURIComponent(selectedFile)}`;
       
       // 使用隱藏的連結元素觸發下載
       const link = document.createElement('a');

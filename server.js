@@ -173,9 +173,10 @@ const onGlobalMessage = (topic, message, sourceClientId) => {
 
             wsMsg = {
                 type: 'sensor_data',
-                voltage: Number(voltage) || 0,
-                temperature: (typeof currentTemperature !== 'undefined') ? currentTemperature : 0
+                voltage: Number(voltage) || 0
             };
+            const cachedTemp = plugTemperatures.get(plugId);
+            if (cachedTemp) wsMsg.temperature = cachedTemp.temperature;
         }
         // 4. 插座名稱同步 (smartplug/{plugId}/plugName)
         else if (topic.endsWith('/plugName')) {
@@ -322,8 +323,7 @@ const onGlobalMessage = (topic, message, sourceClientId) => {
         try {
             const payload = JSON.parse(msgStr);
             if (payload.temperature !== undefined) {
-                currentTemperature = payload.temperature;
-                lastMqttTemperatureAt = Date.now();
+                updatePlugTemperature(plugId, payload.temperature);
             }
         } catch (e) { }
     }
@@ -386,8 +386,7 @@ const onMqttMessage = (topic, message) => {
 
         if (category === 'temperature') {
             if (payload.temperature !== undefined) {
-                currentTemperature = payload.temperature;
-                lastMqttTemperatureAt = Date.now();
+                updatePlugTemperature(plugId, payload.temperature);
             }
             frontendData = {
                 type: 'sensor_data',
@@ -612,14 +611,14 @@ async function initializeServices() {
 
         setTemperatureRecordingContext({
             getRecordingState: getMqttTemperatureRecordingState,
+            listPlugIds: () => Array.from(plugTemperatures.keys()),
+            getTemperature: (plugId) => plugTemperatures.get(plugId)?.temperature ?? null,
         });
 
         global[Symbol.for('smartplug.temperatureLogger.getStatus')] = getLoggerStatus;
 
-        // 啟動溫度記錄
-        startTemperatureLogging(() => {
-            return currentTemperature;
-        }, 30);
+        // 啟動溫度記錄（每台設備各自記錄）
+        startTemperatureLogging(30);
 
         // ==========================================
         // MQTT 自動重連邏輯 (已移除，改由使用者手動觸發各別連線)
@@ -632,14 +631,23 @@ async function initializeServices() {
     }
 }
 
-let currentTemperature = 25.0;
-let lastMqttTemperatureAt = null;
+/** 每台設備最新溫度：plugId -> { temperature, at }（多設備並行時不可共用單一變數） */
+const plugTemperatures = new Map();
 /** ESP32 約每 10 秒發布一次；超過此時間視為無有效 MQTT 溫度 */
 const MQTT_TEMPERATURE_STALE_MS = 2 * 60 * 1000;
 
-function getMqttTemperatureRecordingState() {
+function updatePlugTemperature(plugId, temperature) {
+    const value = Number(temperature);
+    if (!plugId || Number.isNaN(value)) return;
+    plugTemperatures.set(plugId, { temperature: value, at: Date.now() });
+}
+
+function getMqttTemperatureRecordingState(plugId) {
     const clients = mqttShared.getAllClients();
-    const connectedCount = clients.filter((c) => c.status === 'connected').length;
+    const connectedCount = clients.filter(
+        (c) => c.status === 'connected' && mqttShared.getPlugId(c.clientId) === plugId
+    ).length;
+    const lastMqttTemperatureAt = plugTemperatures.get(plugId)?.at ?? null;
 
     if (connectedCount === 0) {
         return {

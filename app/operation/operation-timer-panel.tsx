@@ -775,7 +775,7 @@ export default function OperationTimerPanel() {
 
           headers: { 'Content-Type': 'application/json' },
 
-          body: JSON.stringify({ id, name: trimmed, clientId }),
+          body: JSON.stringify({ id, name: trimmed, clientId, plugId: sessionStorage.getItem('plugId') || '' }),
 
         });
 

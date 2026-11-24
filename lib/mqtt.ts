@@ -61,18 +61,6 @@ export async function updateSettingsClientId(clientId: string): Promise<void> {
   }
 }
 
-// 讀取設定檔案獲取 plugId
-async function getPlugIdFromSettings(): Promise<string> {
-  try {
-    const data = await fs.readFile(SETTINGS_PATH, 'utf-8');
-    const settings = JSON.parse(data);
-    return settings.plugId || 'defaultPlug';
-  } catch (error) {
-    console.error('讀取設定檔案時發生錯誤:', error);
-    return 'defaultPlug';
-  }
-}
-
 // @ts-ignore
 const mqttShared = require('./mqtt-shared');
 
@@ -211,7 +199,7 @@ function initSharedHandlers() {
 initSharedHandlers();
 
 // 連接到 MQTT Broker
-export async function connectMqtt(config: MqttConfig): Promise<{ success: boolean; message: string }> {
+export async function connectMqtt(config: MqttConfig, requestPlugId: string): Promise<{ success: boolean; message: string }> {
 
   try {
     console.log('🔌 透過 SharedManager 請求連接 MQTT:', config.broker);
@@ -220,12 +208,14 @@ export async function connectMqtt(config: MqttConfig): Promise<{ success: boolea
     const cacheEntry = getOrCreateCache(config.clientId);
     cacheEntry.espRegistered = null;
 
-    // 獲取當前 PlugID 正確設置 will 與初始化
-    currentPlugId = await getPlugIdFromSettings();
-    currentClientId = config.clientId;
+    // 本次連線專用的 PlugID／ClientID：後續 setTimeout 內不可讀模組全域，否則多設備同時登入會互相覆蓋
+    const plugId = requestPlugId;
+    const clientId = config.clientId;
+    currentPlugId = plugId;
+    currentClientId = clientId;
 
     // 將 config 傳給 sharedManager 執行連線
-    const client = mqttShared.connect(config, 'Lib', currentPlugId);
+    const client = mqttShared.connect(config, 'Lib', plugId);
 
     return new Promise((resolve) => {
       const onConnect = (connectedClientId: string) => {
@@ -235,25 +225,25 @@ export async function connectMqtt(config: MqttConfig): Promise<{ success: boolea
         console.log(`✅ MQTT 連線成功 (Lib: ${config.clientId})`);
 
         // 更新狀態
-        setOperationPlugId(currentPlugId);
-        setOperationMqttClient(client, config.clientId);
+        setOperationPlugId(plugId);
+        setOperationMqttClient(client, clientId);
 
         // 每位使用者只訂閱一次 smartplug/{plugId}/#（含 announce / voltage / live，避免與單一主題重疊造成雙送）
-        mqttShared.ensurePlugWildcardSubscription(currentClientId, currentPlugId, (err: Error | null) => {
+        mqttShared.ensurePlugWildcardSubscription(clientId, plugId, (err: Error | null) => {
           if (err) {
-            console.warn(`📡 [Lib] [${currentClientId}] plug # 訂閱失敗，操作頁 WS 將重試:`, err.message);
+            console.warn(`📡 [Lib] [${clientId}] plug # 訂閱失敗，操作頁 WS 將重試:`, err.message);
           } else {
-            console.log(`📡 [Lib] [${currentClientId}] 已訂閱 smartplug/${currentPlugId}/#`);
+            console.log(`📡 [Lib] [${clientId}] 已訂閱 smartplug/${plugId}/#`);
           }
         });
 
         // 延遲發送初始化命令
         setTimeout(() => {
           if (client.connected) {
-            const announceTopic = MqttTopics.announce(currentPlugId);
+            const announceTopic = MqttTopics.announce(plugId);
             const announcePayload = JSON.stringify({
-              clientId: currentClientId,
-              plugId: currentPlugId,
+              clientId,
+              plugId,
               broker: config.broker,
               port: config.port,
               username: config.username || "",
@@ -266,7 +256,7 @@ export async function connectMqtt(config: MqttConfig): Promise<{ success: boolea
 
         setTimeout(() => {
           if (client.connected) {
-            const requestTopic = MqttTopics.request(currentPlugId, currentClientId);
+            const requestTopic = MqttTopics.request(plugId, clientId);
             const requestPayload = JSON.stringify({ type: "getVoltage" });
             client.publish(requestTopic, requestPayload, { qos: 1 });
             console.log(`📤 已發送電壓請求 (getVoltage)`);

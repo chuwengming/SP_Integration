@@ -255,7 +255,8 @@ export default function LoginPage() {
           port: FIXED_MQTT.port,
           clientId: clientId,
           username: FIXED_MQTT.username,
-          password: FIXED_MQTT.password
+          password: FIXED_MQTT.password,
+          plugId
         })
       });
 

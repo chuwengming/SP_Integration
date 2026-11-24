@@ -1,19 +1,19 @@
 /**
  * 溫度記錄服務
- * 每半小時記錄一筆溫度數據到對應的星期檔案中
+ * 每半小時為每台設備（PlugID）各記錄一筆溫度到 data/temperature/{plugId}/{星期}.txt
  */
 
 import fs from 'fs/promises';
 import path from 'path';
 import { getNTPTime, formatTemperatureTimestamp, getDayOfWeekFileName, isSameDay } from './ntp-client';
 
-// 檔案儲存目錄
-const DATA_DIR = path.join(process.cwd(), 'data');
+// 檔案儲存目錄（每台設備一個子目錄）
+const DATA_DIR = path.join(process.cwd(), 'data', 'temperature');
 
 // 星期檔案列表
-const WEEKDAY_FILES = [
+export const WEEKDAY_FILES = [
   'Sunday.txt',
-  'Monday.txt', 
+  'Monday.txt',
   'Tuesday.txt',
   'Wednesday.txt',
   'Thursday.txt',
@@ -21,16 +21,36 @@ const WEEKDAY_FILES = [
   'Saturday.txt'
 ];
 
-// 最後記錄的時間和溫度
-let lastRecordTime: Date | null = null;
-let lastTemperature: number | null = null;
+/** PlugID 會組成檔案路徑：只允許英數字，防止路徑穿越 */
+export function isValidPlugId(plugId: unknown): plugId is string {
+  return typeof plugId === 'string' && /^[A-Za-z0-9]{1,64}$/.test(plugId);
+}
+
+function plugDir(plugId: string): string {
+  return path.join(DATA_DIR, plugId);
+}
+
+type PlugRecordState = {
+  lastRecordTime: Date | null;
+  lastTemperature: number | null;
+};
+
+// 每台設備的最後記錄
+const plugRecordStates = new Map<string, PlugRecordState>();
+
+function getPlugRecordState(plugId: string): PlugRecordState {
+  let s = plugRecordStates.get(plugId);
+  if (!s) {
+    s = { lastRecordTime: null, lastTemperature: null };
+    plugRecordStates.set(plugId, s);
+  }
+  return s;
+}
 
 // 記錄器狀態
 let loggerActive = false;
 let intervalId: NodeJS.Timeout | null = null;
 let configuredIntervalMinutes = 30;
-let recordingPaused = false;
-let pauseReason: string | null = null;
 
 export type MqttRecordingState = {
   valid: boolean;
@@ -40,20 +60,21 @@ export type MqttRecordingState = {
 };
 
 export type TemperatureRecordingContext = {
-  getRecordingState?: () => MqttRecordingState;
+  /** 指定設備目前是否有有效（未逾時）的 MQTT 溫度 */
+  getRecordingState?: (plugId: string) => MqttRecordingState;
+  /** 目前有收到溫度的設備清單 */
+  listPlugIds?: () => string[];
+  /** 指定設備的最新溫度 */
+  getTemperature?: (plugId: string) => number | null;
 };
 
 let recordingContext: TemperatureRecordingContext = {};
-
-let lastMqttDiagnostics = {
-  connectedCount: 0,
-  lastMqttTemperatureAt: null as number | null,
-};
 
 const PAUSE_REASON_TEXT: Record<string, string> = {
   no_mqtt_connection: '無 MQTT 連線，暫停寫入',
   no_temperature_data: '尚未收到 MQTT 溫度資料，暫停寫入',
   stale_temperature: 'MQTT 溫度資料逾時，暫停寫入',
+  invalid_plug_id: '缺少或無效的 PlugID',
 };
 
 export function setTemperatureRecordingContext(context: TemperatureRecordingContext): void {
@@ -70,14 +91,8 @@ function getPauseReasonText(reason: string | null): string | null {
  */
 export async function initTemperatureLogger(): Promise<void> {
   try {
-    // 確保 data 目錄存在
-    await ensureDataDirectory();
-    
-    // 初始化星期檔案
-    await initWeekdayFiles();
-    
-    console.log('📝 溫度記錄服務初始化完成');
-    
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    console.log('📝 溫度記錄服務初始化完成（依 PlugID 分目錄）');
   } catch (error) {
     console.error('❌ 溫度記錄服務初始化失敗:', error);
     throw error;
@@ -85,38 +100,18 @@ export async function initTemperatureLogger(): Promise<void> {
 }
 
 /**
- * 確保 data 目錄存在
+ * 初始化某台設備的星期檔案（如果不存在）
  */
-async function ensureDataDirectory(): Promise<void> {
-  try {
-    await fs.access(DATA_DIR);
-  } catch {
-    // 目錄不存在，創建它
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    console.log(`📁 已創建數據目錄: ${DATA_DIR}`);
-  }
-}
-
-/**
- * 初始化星期檔案（如果不存在）
- */
-async function initWeekdayFiles(): Promise<void> {
+async function initWeekdayFiles(plugId: string): Promise<void> {
+  const dir = plugDir(plugId);
+  await fs.mkdir(dir, { recursive: true });
   for (const filename of WEEKDAY_FILES) {
-    const filePath = path.join(DATA_DIR, filename);
-    
+    const filePath = path.join(dir, filename);
     try {
       await fs.access(filePath);
-      // 檔案存在，檢查是否需要添加標題
-      const content = await fs.readFile(filePath, 'utf-8');
-      if (!content.startsWith('溫度記錄 - ')) {
-        const header = createFileHeader(filename);
-        await fs.writeFile(filePath, header + content);
-      }
     } catch {
-      // 檔案不存在，創建帶有標題的檔案
-      const header = createFileHeader(filename);
-      await fs.writeFile(filePath, header);
-      console.log(`📄 已創建溫度記錄檔案: ${filename}`);
+      await fs.writeFile(filePath, createFileHeader(plugId, filename));
+      console.log(`📄 已創建溫度記錄檔案: ${plugId}/${filename}`);
     }
   }
 }
@@ -124,38 +119,32 @@ async function initWeekdayFiles(): Promise<void> {
 /**
  * 創建檔案標題
  */
-function createFileHeader(filename: string): string {
+function createFileHeader(plugId: string, filename: string): string {
   const dayName = filename.replace('.txt', '');
-  return `溫度記錄 - ${dayName}\n${'='.repeat(50)}\n`;
+  return `溫度記錄 - ${plugId} - ${dayName}\n${'='.repeat(50)}\n`;
 }
 
 /**
- * 開始溫度記錄
- * @param getTemperatureCallback 獲取當前溫度的回調函數
+ * 開始溫度記錄（每個週期為所有有效設備各記錄一筆）
  * @param intervalMinutes 記錄間隔（分鐘）
  */
-export function startTemperatureLogging(
-  getTemperatureCallback: () => Promise<number> | number,
-  intervalMinutes: number = 30
-): void {
+export function startTemperatureLogging(intervalMinutes: number = 30): void {
   if (loggerActive) {
     console.warn('⚠️  溫度記錄服務已在運行中');
     return;
   }
-  
+
   loggerActive = true;
   configuredIntervalMinutes = intervalMinutes;
 
-  // 立即記錄一次
-  recordTemperature(getTemperatureCallback).catch(error => {
+  recordAllPlugs().catch(error => {
     console.error('❌ 初始溫度記錄失敗:', error);
   });
-  
-  // 設定定期記錄
+
   intervalId = setInterval(async () => {
-    await recordTemperature(getTemperatureCallback);
+    await recordAllPlugs();
   }, intervalMinutes * 60 * 1000);
-  
+
   console.log(`📝 溫度記錄服務已啟動（每 ${intervalMinutes} 分鐘記錄一次）`);
 }
 
@@ -164,155 +153,127 @@ export function startTemperatureLogging(
  */
 export function stopTemperatureLogging(): void {
   if (!loggerActive) return;
-  
+
   loggerActive = false;
-  
+
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
   }
-  
+
   console.log('📝 溫度記錄服務已停止');
 }
 
+async function recordAllPlugs(): Promise<void> {
+  const plugIds = (recordingContext.listPlugIds?.() ?? []).filter(isValidPlugId);
+  if (plugIds.length === 0) {
+    console.log('⏸️ 溫度記錄暫停：尚無任何設備的 MQTT 溫度資料');
+    return;
+  }
+  for (const plugId of plugIds) {
+    await recordTemperature(plugId);
+  }
+}
+
 /**
- * 記錄溫度數據
+ * 記錄單一設備的溫度數據
  */
-async function recordTemperature(getTemperatureCallback: () => Promise<number> | number): Promise<void> {
+async function recordTemperature(plugId: string): Promise<void> {
   try {
-    const mqttState = recordingContext.getRecordingState?.();
-    if (mqttState) {
-      lastMqttDiagnostics = {
-        connectedCount: mqttState.connectedCount,
-        lastMqttTemperatureAt: mqttState.lastMqttTemperatureAt,
-      };
-    }
-
+    const mqttState = recordingContext.getRecordingState?.(plugId);
     if (!mqttState?.valid) {
-      recordingPaused = true;
-      pauseReason = mqttState?.reason ?? 'no_mqtt_connection';
-      console.log(`⏸️ 溫度記錄暫停：${getPauseReasonText(pauseReason)}`);
+      console.log(`⏸️ [${plugId}] 溫度記錄暫停：${getPauseReasonText(mqttState?.reason ?? 'no_mqtt_connection')}`);
       return;
     }
 
-    // 獲取當前時間（使用 NTP）
+    const state = getPlugRecordState(plugId);
     const currentTime = await getNTPTime();
-    
-    // 檢查是否需要記錄（避免短時間內重複記錄）
-    if (lastRecordTime && (currentTime.getTime() - lastRecordTime.getTime()) < 25 * 60 * 1000) {
-      console.log('⏳ 距離上次記錄不足25分鐘，跳過本次記錄');
+
+    // 避免短時間內重複記錄
+    if (state.lastRecordTime && (currentTime.getTime() - state.lastRecordTime.getTime()) < 25 * 60 * 1000) {
       return;
     }
-    
-    // 獲取當前溫度
-    const temperature = await Promise.resolve(getTemperatureCallback());
-    
-    // 驗證溫度數據
+
+    const temperature = recordingContext.getTemperature?.(plugId);
     if (typeof temperature !== 'number' || isNaN(temperature)) {
       throw new Error(`無效的溫度數據: ${temperature}`);
     }
-    
-    // 格式化記錄行
+
     const timestamp = formatTemperatureTimestamp(currentTime);
     const recordLine = `${timestamp}${temperature.toFixed(1)}°C`;
-    
-    // 獲取對應的星期檔案
+
+    await initWeekdayFiles(plugId);
     const filename = getDayOfWeekFileName(currentTime);
-    const filePath = path.join(DATA_DIR, filename);
-    
-    // 檢查是否是同一天，如果不是則清空檔案並添加新標題
-    await manageFileRotation(filePath, filename, currentTime);
-    
-    // 寫入記錄
+    const filePath = path.join(plugDir(plugId), filename);
+
+    await manageFileRotation(plugId, filePath, filename, currentTime);
     await fs.appendFile(filePath, recordLine + '\n', 'utf-8');
-    
-    // 更新最後記錄狀態
-    lastRecordTime = currentTime;
-    lastTemperature = temperature;
-    recordingPaused = false;
-    pauseReason = null;
-    
-    console.log(`📝 溫度記錄成功: ${recordLine} → ${filename}`);
-    
+
+    state.lastRecordTime = currentTime;
+    state.lastTemperature = temperature;
+
+    console.log(`📝 [${plugId}] 溫度記錄成功: ${recordLine} → ${filename}`);
   } catch (error) {
-    console.error('❌ 溫度記錄失敗:', error);
+    console.error(`❌ [${plugId}] 溫度記錄失敗:`, error);
   }
 }
 
 /**
  * 管理檔案循環（新的一天時清空舊內容）
  */
-async function manageFileRotation(filePath: string, filename: string, currentTime: Date): Promise<void> {
+async function manageFileRotation(plugId: string, filePath: string, filename: string, currentTime: Date): Promise<void> {
   try {
     const fileStats = await fs.stat(filePath);
     const fileModifiedTime = new Date(fileStats.mtime);
-    
-    // 如果不是同一天，清空檔案並重新添加標題
     if (!isSameDay(fileModifiedTime, currentTime)) {
-      const dayName = filename.replace('.txt', '');
-      const header = createFileHeader(filename);
-      await fs.writeFile(filePath, header, 'utf-8');
-      console.log(`🔄 新的一天開始，已清空檔案: ${filename}`);
+      await fs.writeFile(filePath, createFileHeader(plugId, filename), 'utf-8');
+      console.log(`🔄 [${plugId}] 新的一天開始，已清空檔案: ${filename}`);
     }
-  } catch (error) {
-    // 檔案可能不存在，創建它
-    const dayName = filename.replace('.txt', '');
-    const header = createFileHeader(filename);
-    await fs.writeFile(filePath, header, 'utf-8');
+  } catch {
+    await fs.writeFile(filePath, createFileHeader(plugId, filename), 'utf-8');
   }
 }
 
+/** 指定設備、指定星期檔的完整路徑；參數無效時回傳 null */
+export function resolveLogFilePath(plugId: string, filename: string): string | null {
+  if (!isValidPlugId(plugId) || !WEEKDAY_FILES.includes(filename)) return null;
+  return path.join(plugDir(plugId), filename);
+}
+
 /**
- * 獲取指定檔案的溫度記錄
+ * 獲取指定設備、指定檔案的溫度記錄
  */
-export async function getTemperatureRecords(filename: string): Promise<string[]> {
+export async function getTemperatureRecords(plugId: string, filename: string): Promise<string[]> {
+  const filePath = resolveLogFilePath(plugId, filename);
+  if (!filePath) return [];
   try {
-    const filePath = path.join(DATA_DIR, filename);
     const content = await fs.readFile(filePath, 'utf-8');
-    
-    // 過濾掉標題行和空行
-    const lines = content.split('\n').filter(line => {
-      return line.trim() !== '' && 
-             !line.startsWith('溫度記錄 - ') && 
+    return content.split('\n').filter(line => {
+      return line.trim() !== '' &&
+             !line.startsWith('溫度記錄 - ') &&
              !line.startsWith('=');
     });
-    
-    return lines;
-  } catch (error) {
-    console.error(`❌ 讀取溫度記錄檔案失敗 (${filename}):`, error);
+  } catch {
     return [];
   }
 }
 
 /**
- * 獲取所有可用的溫度記錄檔案列表
+ * 獲取指定設備的溫度記錄檔案列表（固定七個星期檔）
  */
-export async function getAvailableLogFiles(): Promise<string[]> {
-  try {
-    const files = await fs.readdir(DATA_DIR);
-    
-    // 只返回星期檔案
-    return files.filter(file => 
-      WEEKDAY_FILES.includes(file) && 
-      file.endsWith('.txt')
-    ).sort((a, b) => {
-      // 按星期順序排序
-      return WEEKDAY_FILES.indexOf(a) - WEEKDAY_FILES.indexOf(b);
-    });
-  } catch (error) {
-    console.error('❌ 讀取溫度記錄檔案列表失敗:', error);
-    return WEEKDAY_FILES; // 返回預設列表
-  }
+export async function getAvailableLogFiles(plugId: string): Promise<string[]> {
+  if (!isValidPlugId(plugId)) return [];
+  return [...WEEKDAY_FILES];
 }
 
 /**
- * 獲取今日的溫度記錄
+ * 獲取指定設備的今日溫度記錄
  */
-export async function getTodayTemperatureRecords(): Promise<string[]> {
+export async function getTodayTemperatureRecords(plugId: string): Promise<string[]> {
   try {
     const currentTime = await getNTPTime();
     const filename = getDayOfWeekFileName(currentTime);
-    return await getTemperatureRecords(filename);
+    return await getTemperatureRecords(plugId, filename);
   } catch (error) {
     console.error('❌ 獲取今日溫度記錄失敗:', error);
     return [];
@@ -320,32 +281,9 @@ export async function getTodayTemperatureRecords(): Promise<string[]> {
 }
 
 /**
- * 刪除所有溫度記錄檔案（用於測試）
+ * 獲取指定設備的記錄器狀態
  */
-export async function clearAllTemperatureLogs(): Promise<void> {
-  try {
-    for (const filename of WEEKDAY_FILES) {
-      const filePath = path.join(DATA_DIR, filename);
-      try {
-        await fs.unlink(filePath);
-        console.log(`🗑️  已刪除溫度記錄檔案: ${filename}`);
-      } catch (error) {
-        // 檔案可能不存在，忽略錯誤
-      }
-    }
-    
-    // 重新初始化檔案
-    await initWeekdayFiles();
-    
-  } catch (error) {
-    console.error('❌ 清除溫度記錄失敗:', error);
-  }
-}
-
-/**
- * 獲取記錄器狀態
- */
-export function getLoggerStatus(): {
+export function getLoggerStatus(plugId?: string): {
   active: boolean;
   recordingPaused: boolean;
   pauseReason: string | null;
@@ -356,32 +294,26 @@ export function getLoggerStatus(): {
   mqttConnectedCount: number;
   lastMqttTemperatureAt: string | null;
 } {
-  const mqttState = recordingContext.getRecordingState?.();
-  if (mqttState) {
-    lastMqttDiagnostics = {
-      connectedCount: mqttState.connectedCount,
-      lastMqttTemperatureAt: mqttState.lastMqttTemperatureAt,
-    };
-    if (!mqttState.valid) {
-      recordingPaused = true;
-      pauseReason = mqttState.reason;
-    } else if (loggerActive) {
-      recordingPaused = false;
-      pauseReason = null;
-    }
-  }
+  const validPlug = isValidPlugId(plugId);
+  const mqttState = validPlug ? recordingContext.getRecordingState?.(plugId) : undefined;
+  const state = validPlug ? plugRecordStates.get(plugId) : undefined;
+
+  let pauseReason: string | null = null;
+  if (!validPlug) pauseReason = 'invalid_plug_id';
+  else if (!mqttState) pauseReason = 'no_mqtt_connection';
+  else if (!mqttState.valid) pauseReason = mqttState.reason;
 
   return {
     active: loggerActive,
-    recordingPaused,
+    recordingPaused: !loggerActive || pauseReason !== null,
     pauseReason,
     pauseReasonText: getPauseReasonText(pauseReason),
-    lastRecordTime: lastRecordTime ? lastRecordTime.toISOString() : null,
-    lastTemperature,
+    lastRecordTime: state?.lastRecordTime ? state.lastRecordTime.toISOString() : null,
+    lastTemperature: state?.lastTemperature ?? null,
     intervalMinutes: loggerActive ? configuredIntervalMinutes : 0,
-    mqttConnectedCount: lastMqttDiagnostics.connectedCount,
-    lastMqttTemperatureAt: lastMqttDiagnostics.lastMqttTemperatureAt
-      ? new Date(lastMqttDiagnostics.lastMqttTemperatureAt).toISOString()
+    mqttConnectedCount: mqttState?.connectedCount ?? 0,
+    lastMqttTemperatureAt: mqttState?.lastMqttTemperatureAt
+      ? new Date(mqttState.lastMqttTemperatureAt).toISOString()
       : null,
   };
 }

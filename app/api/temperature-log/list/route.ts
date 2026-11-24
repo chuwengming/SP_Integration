@@ -1,17 +1,28 @@
-import { NextResponse } from 'next/server';
-import { getAvailableLogFiles } from '@/lib/temperature-logger';
+import { NextRequest, NextResponse } from 'next/server';
+import { getAvailableLogFiles, isValidPlugId } from '@/lib/temperature-logger';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    console.log('📋 請求溫度記錄檔案列表');
+    const plugId = new URL(request.url).searchParams.get('plugId');
+    if (!isValidPlugId(plugId)) {
+      return NextResponse.json({
+        success: false,
+        files: [],
+        count: 0,
+        error: '缺少或無效的 PlugID',
+        message: '請重新登入後再查詢溫度記錄'
+      }, { status: 400 });
+    }
+
+    console.log(`📋 請求溫度記錄檔案列表 (Plug: ${plugId})`);
     
-    const files = await getAvailableLogFiles();
+    const files = await getAvailableLogFiles(plugId);
     
     const fileList = files.map(filename => ({
       name: filename,
       displayName: filename.replace('.txt', ''),
       dayOfWeek: filename.replace('.txt', ''),
-      url: `/api/temperature-log/download?file=${encodeURIComponent(filename)}`
+      url: `/api/temperature-log/download?plugId=${encodeURIComponent(plugId)}&file=${encodeURIComponent(filename)}`
     }));
     
     return NextResponse.json({

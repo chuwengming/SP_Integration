@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { updateRelayName, getMqttClient } from '@/lib/mqtt-operation';
+import { updateRelayName, getMqttClient, getPlugIdForClient } from '@/lib/mqtt-operation';
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { id, name, clientId } = body;
+    const plugId: string = getPlugIdForClient(clientId) || body.plugId || '';
 
     // 驗證輸入
     if (id === undefined || !name || !clientId) {
@@ -37,10 +38,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log(`更新繼電器 ${id} 名稱為: ${name} (Client: ${clientId})`);
+    if (!plugId) {
+        return NextResponse.json(
+            { success: false, error: '無法判定此 Client 的 PlugID，請重新登入' },
+            { status: 400 }
+        );
+    }
+
+    console.log(`更新繼電器 ${id} 名稱為: ${name} (Plug: ${plugId}, Client: ${clientId})`);
 
     // 通過 MQTT 發送名稱更新
-    const success = updateRelayName(id, name, undefined, clientId);
+    const success = updateRelayName(id, name, plugId, clientId);
 
     if (success) {
       return NextResponse.json({

@@ -305,7 +305,7 @@ export default function OperationPanel({ uiVariant }: OperationPanelProps) {
         const response = await fetch('/api/relay/name', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, name: trimmedName, clientId })
+          body: JSON.stringify({ id, name: trimmedName, clientId, plugId: sessionStorage.getItem('plugId') || '' })
         });
         const result = await response.json();
         if (result.success) {

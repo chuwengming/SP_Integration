@@ -1,26 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs/promises';
-import path from 'path';
-
-const DATA_DIR = path.join(process.cwd(), 'data');
-
-// 允許下載的檔案列表（安全性檢查）
-const ALLOWED_FILES = [
-  'Sunday.txt',
-  'Monday.txt',
-  'Tuesday.txt',
-  'Wednesday.txt',
-  'Thursday.txt',
-  'Friday.txt',
-  'Saturday.txt'
-];
+import { WEEKDAY_FILES as ALLOWED_FILES, isValidPlugId, resolveLogFilePath } from '@/lib/temperature-logger';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const filename = searchParams.get('file');
+    const plugId = searchParams.get('plugId');
+
+    if (!isValidPlugId(plugId)) {
+      return NextResponse.json({
+        success: false,
+        error: '缺少或無效的 PlugID',
+        message: '請重新登入後再下載溫度記錄'
+      }, { status: 400 });
+    }
     
-    console.log(`📥 請求下載溫度記錄檔案: ${filename}`);
+    console.log(`📥 請求下載溫度記錄檔案: ${plugId}/${filename}`);
     
     // 驗證檔案名稱
     if (!filename) {
@@ -41,7 +37,7 @@ export async function GET(request: NextRequest) {
       }, { status: 403 });
     }
     
-    const filePath = path.join(DATA_DIR, filename);
+    const filePath = resolveLogFilePath(plugId, filename)!;
     
     // 檢查檔案是否存在
     try {
@@ -64,7 +60,7 @@ export async function GET(request: NextRequest) {
     
     // 設定下載標頭
     response.headers.set('Content-Type', 'text/plain; charset=utf-8');
-    response.headers.set('Content-Disposition', `attachment; filename="${filename}"`);
+    response.headers.set('Content-Disposition', `attachment; filename="${plugId}_${filename}"`);
     response.headers.set('Content-Length', fileStats.size.toString());
     response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     response.headers.set('Pragma', 'no-cache');

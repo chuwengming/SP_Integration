@@ -42,6 +42,12 @@ export function getMqttClient(clientId?: string): any {
   return mqttShared.getClient(clientId);
 }
 
+/** 該 Client 這次 MQTT 連線所綁定的 PlugID（多設備並行時唯一可信來源，不可用全域 currentPlugId） */
+export function getPlugIdForClient(clientId?: string): string {
+  if (!clientId) return '';
+  return mqttShared.getPlugId(clientId) || '';
+}
+
 // 設置 PlugID
 export function setPlugId(plugId: string) {
   currentPlugId = plugId;
@@ -274,8 +280,8 @@ export function controlRelay(relayId: number, state: boolean, plugId: string = c
 }
 
 // 更新繼電器名稱
-export function updateRelayName(relayId: number, name: string, plugId: string = currentPlugId, clientId?: string): boolean {
-  if (!clientId) return false;
+export function updateRelayName(relayId: number, name: string, plugId: string, clientId?: string): boolean {
+  if (!clientId || !plugId) return false;
   const message = JSON.stringify({
     id: relayId,
     name: name

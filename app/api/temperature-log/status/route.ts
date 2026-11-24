@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 const LOGGER_STATUS_KEY = Symbol.for('smartplug.temperatureLogger.getStatus');
 
@@ -14,10 +14,10 @@ type LoggerStatus = {
   lastMqttTemperatureAt: string | null;
 };
 
-function getSharedLoggerStatus(): LoggerStatus {
+function getSharedLoggerStatus(plugId: string | null): LoggerStatus {
   const getStatus = (global as Record<symbol, unknown>)[LOGGER_STATUS_KEY];
   if (typeof getStatus === 'function') {
-    return getStatus() as LoggerStatus;
+    return getStatus(plugId ?? undefined) as LoggerStatus;
   }
 
   return {
@@ -48,8 +48,8 @@ function formatLocalTime(iso: string | null): string | null {
   }
 }
 
-export async function GET() {
-  const status = getSharedLoggerStatus();
+export async function GET(request: NextRequest) {
+  const status = getSharedLoggerStatus(new URL(request.url).searchParams.get('plugId'));
 
   const recordingStatusText = status.recordingPaused
     ? (status.pauseReasonText ?? '暫停寫入')
