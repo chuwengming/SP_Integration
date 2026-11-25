@@ -1,4 +1,5 @@
 import pool from '@/lib/db';
+import { DEFAULT_DEVICE_LOGIN_PASSWORD } from '@/lib/mqtt-defaults';
 import { normalizeUiType, type UiType } from '@/lib/ui-type';
 
 export type RegistryRow = {
@@ -42,6 +43,29 @@ export async function getLoginPasswordByPlugId(plugId: string): Promise<string |
 
     if (!rows.length) return null;
     return rows[0].login_password || DEFAULT_LOGIN_PASSWORD;
+}
+
+/** 登入專用：必須在 plug_registry 找到該 PlugID，不得以「查無列 → 預設密碼」放行 */
+export type PlugLoginLookup =
+    | { status: 'no_database' }
+    | { status: 'not_registered' }
+    | { status: 'ok'; loginPassword: string; uiType: UiType };
+
+export async function lookupPlugForLogin(plugId: string): Promise<PlugLoginLookup> {
+    if (!pool) return { status: 'no_database' };
+
+    const [rows]: any = await pool.execute(
+        'SELECT login_password, ui_type FROM plug_registry WHERE LOWER(plug_id) = LOWER(?)',
+        [plugId.trim()]
+    );
+
+    if (!rows.length) return { status: 'not_registered' };
+
+    return {
+        status: 'ok',
+        loginPassword: rows[0].login_password || DEFAULT_LOGIN_PASSWORD,
+        uiType: normalizeUiType(rows[0].ui_type),
+    };
 }
 
 /**
@@ -96,19 +120,53 @@ export async function markPlugIdAssignedByFactorySerial(
 }
 
 /**
- * ESP32 原廠重置：釋放出廠編號，允許同一設備日後重新配號
+ * ESP32 原廠重置通知中央：
+ * - registered = No（可再掃 QR 配號）
+ * - login_password 回復預設（與本機出廠密碼一致，否則忘碼後無法登 Next）
+ * 優先 factory_serial；若無則用 plug_id。
  */
+export async function releasePlugOnFactoryReset(params: {
+    factorySerial?: string;
+    plugId?: string;
+}): Promise<'updated' | 'no_database' | 'not_found'> {
+    if (!pool) return 'no_database';
+
+    const factorySerial = params.factorySerial?.trim() || '';
+    const plugId = params.plugId?.trim() || '';
+
+    if (factorySerial) {
+        const [result]: any = await pool.execute(
+            `UPDATE plug_registry
+             SET registered = 'No',
+                 login_password = ?,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE factory_serial = ?`,
+            [DEFAULT_DEVICE_LOGIN_PASSWORD, factorySerial]
+        );
+        if (result.affectedRows > 0) return 'updated';
+    }
+
+    if (plugId) {
+        const [result]: any = await pool.execute(
+            `UPDATE plug_registry
+             SET registered = 'No',
+                 login_password = ?,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE LOWER(plug_id) = LOWER(?)`,
+            [DEFAULT_DEVICE_LOGIN_PASSWORD, plugId]
+        );
+        if (result.affectedRows > 0) return 'updated';
+    }
+
+    return 'not_found';
+}
+
+/** @deprecated 請用 releasePlugOnFactoryReset（會一併重設登入密碼） */
 export async function releasePlugByFactorySerial(
     factorySerial: string
 ): Promise<boolean> {
-    if (!pool) return false;
-
-    const [result]: any = await pool.execute(
-        `UPDATE plug_registry SET registered = 'No' WHERE factory_serial = ?`,
-        [factorySerial]
-    );
-
-    return result.affectedRows > 0;
+    const result = await releasePlugOnFactoryReset({ factorySerial });
+    return result === 'updated';
 }
 
 export async function updateLoginPasswordByPlugId(
