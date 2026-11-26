@@ -863,6 +863,17 @@ export default function OperationTimerPanel() {
 
     <div className="min-h-screen bg-gradient-to-b from-slate-100 to-indigo-50/50 flex flex-col">
 
+      {(deviceDate || deviceTime) && (
+        <div
+          className={`fixed top-3 left-3 z-50 inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-mono font-bold shadow-md ${
+            timerCapable ? 'bg-emerald-500 text-white' : 'bg-emerald-700 text-white'
+          }`}
+        >
+          <span className={`w-2 h-2 rounded-full animate-pulse ${timerCapable ? 'bg-white' : 'bg-amber-300'}`} />
+          {deviceDate} {deviceTime}
+        </div>
+      )}
+
       <div className="fixed top-3 right-3 z-50 flex flex-col items-end gap-1.5">
 
         <div className={`px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-2 ${mqttConnected ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'}`}>
@@ -954,22 +965,6 @@ export default function OperationTimerPanel() {
             <p className="text-lg font-semibold text-slate-800">{deviceName}</p>
 
           </div>
-
-          {(deviceDate || deviceTime) && (
-
-            <div className={`mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-mono shadow-md ${
-
-              timerCapable ? 'bg-indigo-600 text-white' : 'bg-slate-500 text-white'
-
-            }`}>
-
-              <span className={`w-2 h-2 rounded-full animate-pulse ${timerCapable ? 'bg-emerald-300' : 'bg-amber-300'}`} />
-
-              {deviceDate} {deviceTime}
-
-            </div>
-
-          )}
 
         </div>
 
